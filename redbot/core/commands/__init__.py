@@ -25,7 +25,6 @@ from .commands import (
 )
 from .context import Context as Context, GuildContext as GuildContext, DMContext as DMContext
 from .converter import (
-    positive_int as positive_int,
     DictConverter as DictConverter,
     RelativedeltaConverter as RelativedeltaConverter,
     TimedeltaConverter as TimedeltaConverter,
