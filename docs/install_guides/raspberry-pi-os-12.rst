@@ -1,8 +1,12 @@
 .. _install-raspberry-pi-os-12:
+.. os-image-location::
 
-=============================================
-Installing Red on Raspberry Pi OS 12 Bookworm
-=============================================
+    # cloud-init (which is required for install testing) is not available in Raspberry Pi OS 12
+    # https://www.raspberrypi.com/news/cloud-init-on-raspberry-pi-os/
+
+======================================================
+Installing Red on Raspberry Pi OS (Legacy) 12 Bookworm
+======================================================
 
 .. include:: _includes/supported-arch-aarch64+armv7l.rst
 

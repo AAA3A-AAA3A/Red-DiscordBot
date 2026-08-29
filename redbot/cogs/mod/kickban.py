@@ -16,6 +16,7 @@ from redbot.core.utils.chat_formatting import (
     format_perms_list,
 )
 from redbot.core.utils.mod import get_audit_reason
+from redbot.core.utils.views import ConfirmView
 from .abc import MixinMeta
 from .utils import is_allowed_by_hierarchy
 
@@ -143,6 +144,8 @@ class KickBanMixin(MixinMeta):
 
             toggle = await self.config.guild(guild).dm_on_kickban()
             if toggle:
+                extra_embed = await self.config.guild(guild).ban_show_extra()
+
                 with contextlib.suppress(discord.HTTPException):
                     em = discord.Embed(
                         title=bold(_("You have been banned from {guild}.").format(guild=guild)),
@@ -153,6 +156,17 @@ class KickBanMixin(MixinMeta):
                         value=reason if reason is not None else _("No reason was given."),
                         inline=False,
                     )
+                    if extra_embed:
+                        extra_embed_title = await self.config.guild(guild).ban_extra_embed_title()
+                        extra_embed_contents = await self.config.guild(
+                            guild
+                        ).ban_extra_embed_contents()
+
+                        em.add_field(
+                            name=bold(extra_embed_title, escape_formatting=False),
+                            value=extra_embed_contents,
+                            inline=False,
+                        )
                     await user.send(embed=em)
 
             ban_type = "ban"
@@ -594,7 +608,7 @@ class KickBanMixin(MixinMeta):
     async def tempban(
         self,
         ctx: commands.Context,
-        member: discord.Member,
+        member: Union[discord.Member, RawUserIdConverter],
         duration: Optional[commands.TimedeltaConverter] = None,
         days: Optional[int] = None,
         *,
@@ -615,6 +629,11 @@ class KickBanMixin(MixinMeta):
         """
         guild = ctx.guild
         author = ctx.author
+        in_server = True
+
+        if isinstance(member, int):
+            in_server = False
+            member = self.bot.get_user(member) or discord.Object(id=member)
 
         if reason is None and await self.config.guild(guild).require_reason():
             await ctx.send(_("You must provide a reason for the temporary ban."))
@@ -625,18 +644,19 @@ class KickBanMixin(MixinMeta):
                 _("I cannot let you do that. Self-harm is bad {}").format("\N{PENSIVE FACE}")
             )
             return
-        elif not await is_allowed_by_hierarchy(self.bot, self.config, guild, author, member):
-            await ctx.send(
-                _(
-                    "I cannot let you do that. You are "
-                    "not higher than the user in the role "
-                    "hierarchy."
+        elif in_server:
+            if not await is_allowed_by_hierarchy(self.bot, self.config, guild, author, member):
+                await ctx.send(
+                    _(
+                        "I cannot let you do that. You are "
+                        "not higher than the user in the role "
+                        "hierarchy."
+                    )
                 )
-            )
-            return
-        elif guild.me.top_role <= member.top_role or member == guild.owner:
-            await ctx.send(_("I cannot do that due to Discord hierarchy rules."))
-            return
+                return
+            elif guild.me.top_role <= member.top_role or member == guild.owner:
+                await ctx.send(_("I cannot do that due to Discord hierarchy rules."))
+                return
 
         guild_data = await self.config.guild(guild).all()
 
@@ -652,22 +672,75 @@ class KickBanMixin(MixinMeta):
             return
         invite = await self.get_invite_for_reinvite(ctx, int(duration.total_seconds() + 86400))
 
-        await self.config.member(member).banned_until.set(unban_time.timestamp())
+        try:
+            await guild.fetch_ban(member)
+        except discord.NotFound:
+            pass
+        else:
+            current_tempbans = await self.config.guild(guild).current_tempbans()
+            banned_until = False
+            if member.id in current_tempbans:
+                banned_until = await self.config.member_from_ids(
+                    guild.id, member.id
+                ).banned_until()
+            if not ctx.assume_yes:
+                content = (
+                    _(
+                        "User is already tempbanned (ban expires {relative_time}),"
+                        " do you want to proceed?"
+                    ).format(relative_time=f"<t:{int(banned_until)}:R>")
+                    if banned_until
+                    else _("This will downgrade the ban to a tempban, do you want to proceed?")
+                )
+                view = ConfirmView(ctx.author)
+                view.message = await ctx.send(content, view=view)
+                await view.wait()
+                if not view.result:
+                    await ctx.send(_("Okay, I will not be doing that then."))
+                    return
+
+        await self.config.member_from_ids(guild.id, member.id).banned_until.set(
+            unban_time.timestamp()
+        )
         async with self.config.guild(guild).current_tempbans() as current_tempbans:
-            current_tempbans.append(member.id)
+            if member.id not in current_tempbans:
+                current_tempbans.append(member.id)
 
         with contextlib.suppress(discord.HTTPException):
             # We don't want blocked DMs preventing us from banning
-            msg = _("You have been temporarily banned from {server_name} until {date}.").format(
-                server_name=guild.name, date=discord.utils.format_dt(unban_time)
+
+            extra_embed = await self.config.guild(guild).ban_show_extra()
+
+            em = discord.Embed(
+                title=bold(
+                    _("You have been temporarily banned from {guild} until {date}.").format(
+                        guild=guild, date=discord.utils.format_dt(unban_time)
+                    )
+                ),
+                color=await self.bot.get_embed_color(member),
             )
-            if guild_data["dm_on_kickban"] and reason:
-                msg += _("\n\n**Reason:** {reason}").format(reason=reason)
+            em.add_field(
+                name=_("**Reason**"),
+                value=reason if reason is not None else _("No reason was given."),
+                inline=False,
+            )
             if invite:
-                msg += _("\n\nHere is an invite for when your ban expires: {invite_link}").format(
-                    invite_link=invite
+                em.add_field(
+                    name=bold(_("Here is an invite for when your ban expires")),
+                    value=invite,
+                    inline=False,
                 )
-            await member.send(msg)
+            if extra_embed:
+                extra_embed_title = await self.config.guild(guild).ban_extra_embed_title()
+                extra_embed_contents = await self.config.guild(guild).ban_extra_embed_contents()
+
+                em.add_field(
+                    name=bold(extra_embed_title, escape_formatting=False),
+                    value=extra_embed_contents,
+                    inline=False,
+                )
+            if in_server:
+                await member.send(embed=em)
 
         audit_reason = get_audit_reason(author, reason, shorten=True)
 
